@@ -49,6 +49,11 @@ module vproc_result #(
 
 
 
+  // One outstanding transaction per XIF ID; commit cannot be backpressured.
+  localparam int unsigned XIF_ID_CNT = 1 << XIF_ID_W;
+  logic result_fire;
+  assign result_fire = xif_result_if.result_valid && xif_result_if.result_ready;
+
   /////////////////
   // FIFO of committed XIF IDs.  Vicuna must signal result in the order in which the instructions were committed
   // additional signals are available (full/empty signalling) which can be used to stall the pipeline if necessary.  Tie these to issue interface? (Commit cannot stall)
@@ -59,7 +64,7 @@ module vproc_result #(
   fifo_v3 #(
     .FALL_THROUGH (1'b0        ),
     .dtype        (logic [XIF_ID_W-1:0]),
-    .DEPTH        (4           )   //might need to be bigger?
+    .DEPTH        (XIF_ID_CNT)
   ) commit_id_fifo (
     .clk_i,
     .rst_ni     (sync_rst_ni),
@@ -67,12 +72,14 @@ module vproc_result #(
     .data_i     (xif_commit_if.commit.id                                ),
     .push_i     (xif_commit_if.commit_valid & !xif_commit_if.commit.commit_kill),
     .data_o     (res_id_fifo_out                                        ),
-    .pop_i      (xif_result_if.result_valid & xif_result_if.result_ready),
+    .pop_i      (result_fire),
     .empty_o    (res_id_fifo_empty                                      ),
     .full_o     (res_id_fifo_full                                       )  // Commit interface cannot stall, stall issue interface instead.  For CVA6, this prevents offloading.  For CV32E40X, TODO: investigate this
   );
 
-  assign result_fifo_full_stall_o = res_id_fifo_full;
+  assign result_fifo_full_stall_o = res_id_fifo_full || empty_res_fifo_full ||
+                                    xreg_res_fifo_full || vlsu_res_fifo_full ||
+                                    csr_res_fifo_full;
   ////////////////
   // FIFO of results from each source.
   // Each source is guarunteed to signal in order, but might not be in order relative to each other (i.e. load vector load followed by an independent vector alu operation)
@@ -80,14 +87,16 @@ module vproc_result #(
   ///////////////
 
   // FIFO for empty result signalling.
+  logic                empty_res_valid;
   logic                pop_empty_id;
   logic [XIF_ID_W-1:0] empty_res_fifo_out;
   logic                empty_res_fifo_empty;
+  logic                empty_res_fifo_full;
 
   fifo_v3 #(
     .FALL_THROUGH (1'b0       ), //FOR CVA6 CANNOT HAVE FALLTHROUGH ENABLED (Result must come at least one cycle after commit/issue)
     .dtype        (logic [XIF_ID_W-1:0]),
-    .DEPTH        (4           )   //might need to be bigger?
+    .DEPTH        (XIF_ID_CNT)
   ) res_empty_fifo (
     .clk_i,
     .rst_ni     (sync_rst_ni),
@@ -96,12 +105,16 @@ module vproc_result #(
     .push_i     (result_empty_valid_i          ),
     .data_o     (empty_res_fifo_out            ),
     .pop_i      (pop_empty_id                  ),
-    .empty_o    (empty_res_fifo_empty          )
+    .empty_o    (empty_res_fifo_empty          ),
+    .full_o     (empty_res_fifo_full           )
   );
 
-  assign pop_empty_id = ((empty_res_fifo_out == res_id_fifo_out) & xif_result_if.result_ready) & !empty_res_fifo_empty;
+  assign empty_res_valid = !res_id_fifo_empty && !empty_res_fifo_empty &&
+                            (empty_res_fifo_out == res_id_fifo_out);
+  assign pop_empty_id = empty_res_valid && result_fire;
 
   //FIFO for xreg result signalling : TODO: Extend to support floating point results  (Might need its own fifo since xreg result and freg result might not be signalled in order?)
+  logic                xreg_res_valid;
   logic                pop_xreg_id;
   logic                xreg_res_fifo_empty;
   logic                xreg_res_fifo_full;
@@ -117,13 +130,13 @@ module vproc_result #(
   fifo_v3 #(
     .FALL_THROUGH (1'b0        ),
     .dtype        (res_xreg_fifo_data),
-    .DEPTH        (4           )   //Can possibly be smaller?  (Likely impossible to have this many stalled XREG results since these must wait for the vector operation to complete)
+    .DEPTH        (XIF_ID_CNT)
   ) res_xreg_fifo (
     .clk_i,
     .rst_ni     (sync_rst_ni),
     .flush_i    (1'b0                          ),
     .data_i     (xreg_res_fifo_in              ),
-    .push_i     (result_xreg_valid_i           ),
+    .push_i     (result_xreg_valid_i && result_xreg_ready_o),
     .data_o     (xreg_res_fifo_out             ),
     .pop_i      (pop_xreg_id                   ),
     .empty_o    (xreg_res_fifo_empty           ),
@@ -134,11 +147,14 @@ module vproc_result #(
   assign xreg_res_fifo_in.data = result_xreg_data_i;
   assign xreg_res_fifo_in.rd = result_xreg_addr_i;
 
-  assign pop_xreg_id = ((xreg_res_fifo_out.id == res_id_fifo_out) & xif_result_if.result_ready) & !xreg_res_fifo_empty;
+  assign xreg_res_valid = !res_id_fifo_empty && !xreg_res_fifo_empty &&
+                            (xreg_res_fifo_out.id == res_id_fifo_out);
+  assign pop_xreg_id = xreg_res_valid && result_fire;
 
   assign result_xreg_ready_o = !xreg_res_fifo_full;
 
   // FIFO for VLSU result signalling
+  logic                vlsu_res_valid;
   logic                pop_vlsu_id;
   logic                vlsu_res_fifo_empty;
   logic                vlsu_res_fifo_full;
@@ -153,13 +169,13 @@ module vproc_result #(
   fifo_v3 #(
     .FALL_THROUGH (1'b0        ),
     .dtype        (res_vlsu_fifo_data),
-    .DEPTH        (4           )   //Can possibly be smaller (likely impossible to have this many stalled VLSU results, these are often the oldest instructions with the longest time required to signal result)
+    .DEPTH        (XIF_ID_CNT)
   ) res_vlsu_fifo (
     .clk_i,
     .rst_ni     (sync_rst_ni),
     .flush_i    (1'b0                          ),
     .data_i     (vlsu_res_fifo_in              ),
-    .push_i     (result_lsu_valid_i            ),
+    .push_i     (result_lsu_valid_i && result_lsu_ready_o),
     .data_o     (vlsu_res_fifo_out             ),
     .pop_i      (pop_vlsu_id                   ),
     .empty_o    (vlsu_res_fifo_empty           ),
@@ -170,11 +186,14 @@ module vproc_result #(
   assign vlsu_res_fifo_in.exc = result_lsu_exc_i;
   assign vlsu_res_fifo_in.exccode = result_lsu_exccode_i;
 
-  assign pop_vlsu_id = ((vlsu_res_fifo_out.id == res_id_fifo_out) & xif_result_if.result_ready) & !vlsu_res_fifo_empty;
+  assign vlsu_res_valid = !res_id_fifo_empty && !vlsu_res_fifo_empty &&
+                            (vlsu_res_fifo_out.id == res_id_fifo_out);
+  assign pop_vlsu_id = vlsu_res_valid && result_fire;
 
   assign result_lsu_ready_o = !vlsu_res_fifo_full;
 
   // Fifo for CSR signalling results.  Fall Through mode disabled here, since csr results must be buffered for at least one cycle
+  logic                csr_res_valid;
   logic                pop_csr_id;
   logic                csr_res_fifo_empty;
   logic                csr_res_fifo_full;
@@ -191,7 +210,7 @@ module vproc_result #(
   fifo_v3 #(
     .FALL_THROUGH (1'b0        ),
     .dtype        (res_csr_fifo_data),
-    .DEPTH        (4           )
+    .DEPTH        (XIF_ID_CNT)
   ) res_csr_fifo (
     .clk_i,
     .rst_ni     (sync_rst_ni),
@@ -204,13 +223,15 @@ module vproc_result #(
     .full_o     (csr_res_fifo_full             )
   );
 
-  assign csr_fifo_push = result_csr_valid_i;
+  assign csr_fifo_push = result_csr_valid_i && result_csr_ready_o;
 
   assign csr_res_fifo_in.id = result_csr_id_i;
   assign csr_res_fifo_in.data = result_csr_data_i;
   assign csr_res_fifo_in.addr = result_csr_addr_i;
 
-  assign pop_csr_id = ((csr_res_fifo_out.id == res_id_fifo_out) & xif_result_if.result_ready) & !csr_res_fifo_empty;
+  assign csr_res_valid = !res_id_fifo_empty && !csr_res_fifo_empty &&
+                            (csr_res_fifo_out.id == res_id_fifo_out);
+  assign pop_csr_id = csr_res_valid && result_fire;
 
   assign result_csr_ready_o = !csr_res_fifo_full;
 
@@ -228,20 +249,21 @@ module vproc_result #(
     xif_result_if.result.exccode = '0;
     xif_result_if.result.err = '0;
     xif_result_if.result.dbg = '0;
-    xif_result_if.result_valid = (!csr_res_fifo_empty & (csr_res_fifo_out.id == res_id_fifo_out)) | (!vlsu_res_fifo_empty & (vlsu_res_fifo_out.id == res_id_fifo_out)) | (!xreg_res_fifo_empty & (xreg_res_fifo_out.id == res_id_fifo_out)) | (!empty_res_fifo_empty & (empty_res_fifo_out == res_id_fifo_out));
+    xif_result_if.result_valid = empty_res_valid || xreg_res_valid ||
+                                 vlsu_res_valid || csr_res_valid;
 
-    if (pop_xreg_id) begin
+    if (xreg_res_valid) begin
 
         xif_result_if.result.data = xreg_res_fifo_out.data;
         xif_result_if.result.rd = xreg_res_fifo_out.rd;
         xif_result_if.result.we = 1'b1;
 
-    end else if (pop_vlsu_id) begin
+    end else if (vlsu_res_valid) begin
 
         xif_result_if.result.exc = vlsu_res_fifo_out.exc;
         xif_result_if.result.exccode = vlsu_res_fifo_out.exccode;
 
-    end else if (pop_csr_id) begin
+    end else if (csr_res_valid) begin
 
         xif_result_if.result.data = csr_res_fifo_out.data;
         xif_result_if.result.rd = csr_res_fifo_out.addr;
