@@ -330,7 +330,6 @@ module vproc_core import vproc_pkg::*, obi_pkg::*; #(
     // instruction.  To avoid this, the decoder stalls in case the instruction
     // ID of a new instruction is still valid.
     instr_state [XIF_ID_CNT-1:0] instr_state_q,     instr_state_d;     // instruction state
-    logic       [XIF_ID_CNT-1:0] instr_empty_res_q, instr_empty_res_d; // empty result mask
     always_ff @(posedge clk_i) begin : vproc_commit_buf
         if (~rst_ni) begin
             instr_state_q    <= '{default: INSTR_INVALID};
@@ -338,44 +337,31 @@ module vproc_core import vproc_pkg::*, obi_pkg::*; #(
             instr_state_q    <= instr_state_d;
         end
     end
-    always_ff @(posedge clk_i) begin
-        instr_empty_res_q <= instr_empty_res_d;
-    end
-
-    //Update issue/commit status
+    // Use next state so issue and commit can accept the same ID in one cycle.
     always_comb begin
         instr_state_d = instr_state_q;
-        if ((xif_commit_if.commit.id == xif_issue_if.issue_req.id) & xif_commit_if.commit_valid & xif_issue_if.issue_valid & xif_issue_if.issue_resp.accept) begin //If the same instruction is committed and issued in the same cycle
-            //Mark offloaded and comitted instructions as comitted (in this mode, instructions are offloaded non-speculatively and cannot be killed)
-            if (xif_issue_if.issue_valid & xif_issue_if.issue_ready & xif_commit_if.commit_valid) begin
-                instr_state_d[xif_issue_if.issue_req.id] = INSTR_COMMITTED;
-            end
-            //Mark instructions invalid once result is signalled
-            if (xif_result_if.result_valid & xif_result_if.result_ready) begin
-                instr_state_d[xif_result_if.result.id] = INSTR_INVALID;
-            end
-        end else begin
-            if (xif_issue_if.issue_valid & xif_issue_if.issue_ready & xif_issue_if.issue_resp.accept) begin
-                instr_state_d[xif_issue_if.issue_req.id] = INSTR_SPECULATIVE;
-            end
-            if (xif_commit_if.commit_valid & instr_state_d[xif_commit_if.commit.id] == INSTR_SPECULATIVE) begin
-                if (xif_commit_if.commit.commit_kill) begin
-                    instr_state_d[xif_commit_if.commit.id] = INSTR_KILLED;
-                end else begin
-                    instr_state_d[xif_commit_if.commit.id] = INSTR_COMMITTED;
-                end
-            end
-            if (xif_result_if.result_valid & xif_result_if.result_ready) begin
-                instr_state_d[xif_result_if.result.id] = INSTR_INVALID;
-            end
-            //If instruction in CSR queue is killed, mark invalid
-            if (pop_csr_disp & ((instr_state_q[csr_disp_data.id] == INSTR_KILLED) | (csr_disp_data.id == xif_commit_if.commit.id) & xif_commit_if.commit_valid & xif_commit_if.commit.commit_kill)) begin
-                instr_state_d[csr_disp_data.id] = INSTR_INVALID;
-            end
-            //If instruction in pipeline queue is killed, mark invalid
-            if (pop_csr_disp & ((instr_state_q[pipeline_disp_data.xif_id] == INSTR_KILLED) | (pipeline_disp_data.xif_id == xif_commit_if.commit.id) & xif_commit_if.commit_valid & xif_commit_if.commit.commit_kill)) begin
-                instr_state_d[pipeline_disp_data.xif_id] = INSTR_INVALID;
-            end
+        if (instr_offload) begin
+            instr_state_d[xif_issue_if.issue_req.id] = INSTR_SPECULATIVE;
+        end
+        if (xif_commit_if.commit_valid &&
+            instr_state_d[xif_commit_if.commit.id] == INSTR_SPECULATIVE) begin
+            instr_state_d[xif_commit_if.commit.id] =
+                xif_commit_if.commit.commit_kill ? INSTR_KILLED : INSTR_COMMITTED;
+        end
+        if (xif_result_if.result_valid && xif_result_if.result_ready) begin
+            instr_state_d[xif_result_if.result.id] = INSTR_INVALID;
+        end
+        if (pop_csr_disp &&
+            ((instr_state_q[csr_disp_data.id] == INSTR_KILLED) ||
+             (xif_commit_if.commit_valid && xif_commit_if.commit.commit_kill &&
+              csr_disp_data.id == xif_commit_if.commit.id))) begin
+            instr_state_d[csr_disp_data.id] = INSTR_INVALID;
+        end
+        if (pop_pipeline_disp &&
+            ((instr_state_q[pipeline_disp_data.xif_id] == INSTR_KILLED) ||
+             (xif_commit_if.commit_valid && xif_commit_if.commit.commit_kill &&
+              pipeline_disp_data.xif_id == xif_commit_if.commit.id))) begin
+            instr_state_d[pipeline_disp_data.xif_id] = INSTR_INVALID;
         end
     end
 
@@ -422,8 +408,8 @@ module vproc_core import vproc_pkg::*, obi_pkg::*; #(
     assign push_pipeline_disp = dec_valid & dec_ready & (instr_unit != UNIT_CFG); //Push on valid instruction decode for vector pipeline
     assign pop_pipeline_disp = (pipeline_valid & pipeline_ready) | (!pipeline_disp_empty & (((pipeline_disp_data.xif_id == xif_commit_if.commit.id) & xif_commit_if.commit_valid & xif_commit_if.commit.commit_kill) | (instr_state_q[pipeline_disp_data.xif_id] == INSTR_KILLED))); //Only pop on successful handshake with pipelines or killed instruction
 
-    //Signal empty result on sucessful dispatch when not LSU or XRESULT instructions
-    assign result_empty_valid = pop_pipeline_disp & (pipeline_disp_data.unit != UNIT_LSU) & (pipeline_disp_data.unit != UNIT_XRESULT);
+    // Only successful dispatches return empty results; killed queue entries do not.
+    assign result_empty_valid = (pipeline_valid & pipeline_ready) & (pipeline_disp_data.unit != UNIT_LSU) & (pipeline_disp_data.unit != UNIT_XRESULT);
     assign result_empty_id = pipeline_disp_data.xif_id;
 
     //Assign sequential pipeline IDs, decoupled from XIF ID.  This allows for multiple of the same XIF ID to exist in the pipeline, while maintaining strict ordering for accesses
@@ -643,7 +629,11 @@ module vproc_core import vproc_pkg::*, obi_pkg::*; #(
 
     logic csr_valid;
 
-    assign csr_valid = pop_csr_disp & (((csr_disp_data.id == xif_commit_if.commit.id) & xif_commit_if.commit_valid & !xif_commit_if.commit.commit_kill) | (instr_state_q[csr_disp_data.id] != INSTR_KILLED)); //valid input to csr unit when csr dispatch pops instruction that is not killed
+    // A kill on the current commit overrides the previously speculative state.
+    assign csr_valid = pop_csr_disp &&
+                       ((xif_commit_if.commit_valid && csr_disp_data.id == xif_commit_if.commit.id)
+                        ? !xif_commit_if.commit.commit_kill
+                        : instr_state_q[csr_disp_data.id] == INSTR_COMMITTED);
 
     logic [PIPE_CNT-1:0] vx_saturate; //VALU or VMUL can generate a fixed point saturation at the vector pipelines
 
