@@ -7,7 +7,9 @@ package vproc_pkg;
 `define VPROC_OP_MODE_UNION
 //`define VPROC_OP_REGS_UNION
 
+`ifdef RISCV_ZVE32F
 import fpnew_pkg::*;
+`endif
 
 
 typedef enum {
@@ -265,6 +267,7 @@ typedef struct packed {
 //   DYN = 3'b111
 //} fpu_roundmode_e;
  
+`ifdef RISCV_ZVE32F
 typedef struct packed {
     logic       masked;
     fpnew_pkg::operation_e    op;
@@ -278,6 +281,7 @@ typedef struct packed {
     logic [4:0] unused;
 `endif
 } op_mode_fpu;
+`endif // RISCV_ZVE32F
 
 typedef enum logic [0:0] {
     SLD_UP,
@@ -441,7 +445,9 @@ typedef struct packed {
     op_mode_elem elem;
     op_mode_cfg  cfg;
     op_mode_div  div;
+`ifdef RISCV_ZVE32F
     op_mode_fpu  fpu;
+`endif
     op_mode_zvbb zvbb;
     op_mode_zvbc zvbc;
     op_mode_custom custom;
@@ -541,6 +547,7 @@ typedef struct packed {
 } pack_flags;
 
 
+`ifdef RISCV_ZVE32F
 // FPU configuration: features//TODO: IDEALLY INCLUDE THIS FROM fpnew_pkg
 typedef struct packed {
     int unsigned Width;
@@ -557,6 +564,7 @@ localparam fpu_features_t RV32ZVFH = '{
     FpFmtMask:     5'b10100,
     IntFmtMask:    4'b0010  //TODO:FIX
 };
+`endif // RISCV_ZVE32F
 //New struct for decode flags to be passed to unpack:  TODO: Migrate all necessary signal outputs from vproc_decode to this struct and remove duplicates
 typedef struct packed {
     op_regs [2:0] operands;     //TODO: Dynamically select # operands based on # read ports, currently fixed to 3

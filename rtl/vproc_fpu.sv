@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 
 
+`ifdef RISCV_ZVE32F
 module vproc_fpu #(
         parameter int unsigned        FPU_OP_W       = 64,   // DIV unit operand width in bits.  Operates on 32 bit wide operands (SEW8 and SEW16 should be extended in regunpack)
         parameter type                CTRL_T         = logic,
@@ -322,3 +323,4 @@ module vproc_fpu #(
         end
     endgenerate
 endmodule
+`endif // RISCV_ZVE32F

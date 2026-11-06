@@ -137,7 +137,6 @@ set(VICUNA_SOURCE   ${DESIGN_RTL_DIR_VICUNA}/vproc_pkg.sv                       
                     ${DESIGN_RTL_DIR_VICUNA}/vproc_xresult.sv
                     ${DESIGN_RTL_DIR_VICUNA}/vproc_index.sv
                     ${DESIGN_RTL_DIR_VICUNA}/vproc_elem.sv
-                    ${DESIGN_RTL_DIR_VICUNA}/vproc_fpu.sv
                     ${DESIGN_RTL_DIR_VICUNA}/vproc_lsu.sv
                     ${DESIGN_RTL_DIR_VICUNA}/vproc_mul.sv
                     ${DESIGN_RTL_DIR_VICUNA}/vproc_mul_block.sv
@@ -161,6 +160,11 @@ set(VICUNA_SOURCE   ${DESIGN_RTL_DIR_VICUNA}/vproc_pkg.sv                       
                     ${DESIGN_RTL_DIR_VICUNA}/custom_vfu/vproc_custom_vfu.sv
                     ${DESIGN_RTL_DIR_VICUNA}/custom_vfu/vproc_custom_decoder.sv
                     )
+
+# Integer-only configurations do not require the vector FPU or cvfpu.
+if(NOT "${RISCV_ZVE32F}" STREQUAL "")
+    list(APPEND VICUNA_SOURCE ${DESIGN_RTL_DIR_VICUNA}/vproc_fpu.sv)
+endif()
 
 set(VICUNA_INCLUDE  ${DESIGN_RTL_DIR_VICUNA}                                            #Vicuna Include Dirs
                     ${DESIGN_RTL_DIR_VICUNA}/custom_vfu
@@ -251,7 +255,11 @@ set(VICUNA_FLAGS ${RISCV_ZVE32X} ${RISCV_ZVE32F} ${RISCV_ZVFH} ${FORCE_ALIGNED_R
 set(VICUNA_SRCS ${VICUNA_SOURCE} PARENT_SCOPE)
 set(VICUNA_INCS ${VICUNA_INCLUDE} PARENT_SCOPE)
 
-#Include these if FPNEW is not included elsewhere
-
-set(VICUNA_FPU_SRCS ${CVFPU_SOURCE} PARENT_SCOPE) 
-set(VICUNA_FPU_INCS ${CVFPU_INCLUDE} PARENT_SCOPE)
+# Include these if FPNEW is not included elsewhere.
+if(NOT "${RISCV_ZVE32F}" STREQUAL "")
+    set(VICUNA_FPU_SRCS ${CVFPU_SOURCE} PARENT_SCOPE)
+    set(VICUNA_FPU_INCS ${CVFPU_INCLUDE} PARENT_SCOPE)
+else()
+    set(VICUNA_FPU_SRCS "" PARENT_SCOPE)
+    set(VICUNA_FPU_INCS "" PARENT_SCOPE)
+endif()

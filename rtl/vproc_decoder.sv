@@ -48,7 +48,9 @@ module vproc_decoder #(
     );
 
     import vproc_pkg::*;
+    `ifdef RISCV_ZVE32F
     import fpnew_pkg::*;
+    `endif
 
     logic [4:0] instr_vs1;
     logic [4:0] instr_vs2;
@@ -5160,6 +5162,7 @@ module vproc_decoder #(
             vd_invalid  = 1'b0;
         end
 
+`ifdef RISCV_ZVE32F
         if (unit_o == UNIT_FPU) begin
             if (mode_o.fpu.op_reduction) begin
                 // all FPU reduction instructions read the init value from vs1,
@@ -5170,6 +5173,7 @@ module vproc_decoder #(
             end
 
         end
+`endif // RISCV_ZVE32F
 
         // register addresses are always valid if it is not a vector register:
         if (~rs1_o.vreg) begin

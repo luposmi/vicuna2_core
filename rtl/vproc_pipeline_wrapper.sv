@@ -86,7 +86,9 @@ module vproc_pipeline_wrapper import vproc_pkg::*, obi_pkg::*; #(
         output logic [vproc_pkg::UNIT_CNT - 1 : 0] unit_busy_o
     );
     
+    `ifdef RISCV_ZVE32F
     import fpnew_pkg::*;
+    `endif
 
 // `ifdef VERILATOR
 //     // Workaround for Verilator due to https://github.com/verilator/verilator/issues/3433
@@ -456,6 +458,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*, obi_pkg::*; #(
             endcase
         end
 
+`ifdef RISCV_ZVE32F
         //For reduction ops on FPU, need to change the counter increment
         if (unit_fpu & pipe_in_data_i.mode.fpu.op_reduction) begin
             state_init.count_inc = DONT_CARE_ZERO ? count_inc_e'('0) : count_inc_e'('x);
@@ -465,6 +468,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*, obi_pkg::*; #(
                 default: ;
             endcase
         end
+`endif // RISCV_ZVE32F
         if (unit_lsu) begin 
             state_init.count_inc = DONT_CARE_ZERO ? count_inc_e'('0) : count_inc_e'('x);
             state_init.mode.lsu.alt_eew  = pipe_in_data_i.mode.lsu.eew;
@@ -516,7 +520,11 @@ module vproc_pipeline_wrapper import vproc_pkg::*, obi_pkg::*; #(
         end
 
         state_init.field_init_count = unit_lsu ? pipe_in_data_i.mode.lsu.nfields : '0;
+`ifdef RISCV_ZVE32F
         state_init.requires_flush = (unit_xresult & elem_flush) | (unit_fpu & pipe_in_data_i.mode.fpu.op_reduction);
+`else
+        state_init.requires_flush = unit_xresult & elem_flush;
+`endif
         state_init.xif_id         = pipe_in_data_i.xif_id;
         state_init.pipe_id        = pipe_in_data_i.pipe_id;
         state_init.unit           = pipe_in_data_i.unit;
@@ -627,6 +635,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*, obi_pkg::*; #(
             state_init.op_vaddr[                OP_CNT-2    ]          = pipe_in_data_i.rs2.r.vaddr;
             state_init.op_flags[                OP_CNT-1    ].elemwise = 1'b1;
         end
+`ifdef RISCV_ZVE32F
         if (unit_fpu) begin
             //For widening ops always pad with 0s
             state_init.masked = pipe_in_data_i.mode.fpu.masked;
@@ -639,6 +648,7 @@ module vproc_pipeline_wrapper import vproc_pkg::*, obi_pkg::*; #(
             state_init.op_vaddr[(OP_CNT >= 3) ? 2 : 0]      = pipe_in_data_i.rd.addr;
 
         end
+`endif // RISCV_ZVE32F
         if (unit_div) begin
             state_init.masked = pipe_in_data_i.mode.div.masked;
         end

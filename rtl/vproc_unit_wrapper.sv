@@ -651,7 +651,9 @@ module vproc_unit_wrapper
 
       assign pipe_out_pend_clear_cnt_o = '0;
       assign pipe_out_instr_done_o     = unit_out_ctrl.last_cycle;
-    end else if (UNIT == UNIT_FPU) begin
+    end
+`ifdef RISCV_ZVE32F
+    else if (UNIT == UNIT_FPU) begin
       CTRL_T                  unit_out_ctrl;
       logic  [MAX_OP_W  -1:0] unit_out_res;
       logic  [MAX_OP_W/8-1:0] unit_out_mask;
@@ -864,7 +866,9 @@ module vproc_unit_wrapper
 
       //   end
       // end
-    end else if (UNIT == UNIT_ZVBB) begin
+    end
+`endif // RISCV_ZVE32F
+    else if (UNIT == UNIT_ZVBB) begin
       // TODO: PORT THIS UNIT TO NEW PIPELINE SIGNALLING
       // CTRL_T                  unit_out_ctrl;
       // logic  [MAX_OP_W  -1:0] unit_out_res;
