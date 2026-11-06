@@ -273,6 +273,21 @@ module vproc_result #(
 
 
 
+`ifndef SYNTHESIS
+  // fifo_v3 rejects writes while full, including simultaneous pop/push cycles.
+  always @(posedge clk_i) begin
+    if (async_rst_ni && sync_rst_ni) begin
+      if (xif_commit_if.commit_valid && !xif_commit_if.commit.commit_kill &&
+          res_id_fifo_full)
+        $fatal(1, "Vicuna2 committed-result FIFO overflow");
+      if (result_empty_valid_i && empty_res_fifo_full)
+        $fatal(1, "Vicuna2 empty-result FIFO overflow");
+      if (csr_fifo_push && csr_res_fifo_full)
+        $fatal(1, "Vicuna2 CSR-result FIFO overflow");
+    end
+  end
+`endif
+
 `ifdef VPROC_SVA
 `include "vproc_result_sva.svh"
 `endif
